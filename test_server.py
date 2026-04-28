@@ -1,4 +1,5 @@
 import base64
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -54,6 +55,27 @@ def test_websocket_emits_cart_and_echoes_voicebite_audio():
     assert len(sessions) == 1
     assert sessions[0]["received_audio_messages"] == 1
     assert sessions[0]["sent_audio_messages"] == 1
+
+
+def test_websocket_can_send_canned_speech(monkeypatch):
+    pcm = b"\x01\x00" * 1600
+    canned_path = Path(__file__).with_name("assets") / "voicebite-agent-reply.pcm"
+    monkeypatch.setenv("VOICEBITE_RESPONSE_MODE", "canned_speech")
+    monkeypatch.setenv("VOICEBITE_CANNED_AUDIO_PATH", str(canned_path))
+    monkeypatch.setenv("VOICEBITE_CANNED_RESPONSE_CHUNK_MS", "1000")
+
+    with client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(_audio_message(pcm))
+        response = websocket.receive_json()
+
+    assert response["action"] == "audio_message"
+    assert response["sender"] == "AI"
+    assert base64.b64decode(response["audio_bytes"]) != pcm
+
+    session = client.get("/sessions").json()["sessions"][0]
+    assert session["received_audio_messages"] == 1
+    assert session["sent_audio_messages"] >= 1
 
 
 def test_websocket_records_non_audio_messages():

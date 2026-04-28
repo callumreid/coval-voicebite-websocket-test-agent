@@ -43,9 +43,10 @@ confirms the missing details.
 }
 ```
 
-When it receives enough `audio_message.audio_bytes`, it echoes that PCM back in
-the same VoiceBite-style envelope. Echoing gives Coval a deterministic way to
-prove bidirectional audio without adding a TTS dependency.
+By default, the local server echoes received PCM back in the same VoiceBite-style
+envelope. The deployed Fly app runs in `canned_speech` mode, sending a short
+spoken PCM response so Coval simulations produce audible agent audio and
+transcription.
 
 ## Endpoints
 
@@ -144,6 +145,10 @@ All knobs are optional environment variables:
 - `VOICEBITE_SAMPLE_RATE_HZ`: default `16000`.
 - `VOICEBITE_CHANNELS`: default `1`.
 - `VOICEBITE_ECHO_THRESHOLD_BYTES`: default `3200`.
+- `VOICEBITE_RESPONSE_MODE`: `echo` or `canned_speech`; local default `echo`.
+- `VOICEBITE_CANNED_AUDIO_PATH`: raw PCM16LE mono 16 kHz response file.
+- `VOICEBITE_CANNED_RESPONSE_LIMIT`: default `2`.
+- `VOICEBITE_CANNED_RESPONSE_CHUNK_MS`: default `100`.
 - `VOICEBITE_SEND_CART_ON_CONNECT`: default `true`.
 - `VOICEBITE_SEND_CART_AFTER_FIRST_ECHO`: default `false`.
 - `VOICEBITE_SEND_SESSION_READY`: default `false`.

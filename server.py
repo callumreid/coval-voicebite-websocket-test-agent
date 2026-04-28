@@ -9,21 +9,25 @@ confirms the remaining protocol details.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 from collections import deque
 from dataclasses import dataclass
 from dataclasses import field
+from functools import lru_cache
 import json
 import logging
 import math
 import os
+from pathlib import Path
 import time
 from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi import WebSocket
+from fastapi import WebSocketDisconnect
 from fastapi import status
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -33,6 +37,9 @@ SERVICE_NAME = "voicebite-websocket-test-agent"
 VERSION = "0.1.0"
 DEFAULT_PUBLIC_BASE_URL = "https://coval-voicebite-websocket-test-agent.fly.dev"
 VOICEBITE_AUDIO_TEMPLATE = '{"action":"audio_message","payload":{},"audio_bytes":"{{audio_data}}","sender":"AI"}'
+RESPONSE_MODE_ECHO = "echo"
+RESPONSE_MODE_CANNED_SPEECH = "canned_speech"
+DEFAULT_CANNED_AUDIO_PATH = Path(__file__).with_name("assets") / "voicebite-agent-reply.pcm"
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -56,6 +63,14 @@ class Settings:
     bytes_per_sample: int = 2
     echo_threshold_bytes: int = field(default_factory=lambda: _env_int("VOICEBITE_ECHO_THRESHOLD_BYTES", 3200))
     close_after_echoes: int = field(default_factory=lambda: _env_int("VOICEBITE_CLOSE_AFTER_ECHOS", 0))
+    response_mode: str = field(
+        default_factory=lambda: os.environ.get("VOICEBITE_RESPONSE_MODE", RESPONSE_MODE_ECHO).strip().lower()
+    )
+    canned_audio_path: str = field(
+        default_factory=lambda: os.environ.get("VOICEBITE_CANNED_AUDIO_PATH", str(DEFAULT_CANNED_AUDIO_PATH))
+    )
+    canned_response_limit: int = field(default_factory=lambda: _env_int("VOICEBITE_CANNED_RESPONSE_LIMIT", 2))
+    canned_response_chunk_ms: int = field(default_factory=lambda: _env_int("VOICEBITE_CANNED_RESPONSE_CHUNK_MS", 100))
     send_cart_on_connect: bool = field(default_factory=lambda: _env_bool("VOICEBITE_SEND_CART_ON_CONNECT", True))
     send_cart_after_first_echo: bool = field(
         default_factory=lambda: _env_bool("VOICEBITE_SEND_CART_AFTER_FIRST_ECHO", False)
@@ -158,6 +173,10 @@ def _redacted_settings(settings: Settings) -> dict[str, Any]:
         "bytes_per_sample": settings.bytes_per_sample,
         "echo_threshold_bytes": settings.echo_threshold_bytes,
         "close_after_echoes": settings.close_after_echoes,
+        "response_mode": settings.response_mode,
+        "canned_audio_path": settings.canned_audio_path,
+        "canned_response_limit": settings.canned_response_limit,
+        "canned_response_chunk_ms": settings.canned_response_chunk_ms,
         "send_cart_on_connect": settings.send_cart_on_connect,
         "send_cart_after_first_echo": settings.send_cart_after_first_echo,
         "send_session_ready": settings.send_session_ready,
@@ -256,7 +275,7 @@ async def _websocket_handler(websocket: WebSocket, agent_id: str) -> None:
     logger.info("VoiceBite test WebSocket connected session=%s agent_id=%s", session.session_id, agent_id)
 
     audio_buffer = bytearray()
-    echo_count = 0
+    response_count = 0
     cart_sent_after_first_echo = False
 
     try:
@@ -272,7 +291,7 @@ async def _websocket_handler(websocket: WebSocket, agent_id: str) -> None:
         if settings.send_tone_on_connect:
             tone = _sine_pcm(duration_ms=250, settings=settings)
             await _send_audio(websocket, session, tone, settings=settings)
-            echo_count += 1
+            response_count += 1
 
         while True:
             incoming = await websocket.receive()
@@ -297,17 +316,43 @@ async def _websocket_handler(websocket: WebSocket, agent_id: str) -> None:
 
             audio_buffer.extend(audio_bytes)
             threshold = max(settings.echo_threshold_bytes, 1)
+            if settings.response_mode == RESPONSE_MODE_CANNED_SPEECH:
+                if len(audio_buffer) < threshold:
+                    continue
+                audio_buffer.clear()
+                if settings.canned_response_limit and response_count >= settings.canned_response_limit:
+                    continue
+                canned_audio = _load_canned_audio(settings.canned_audio_path)
+                if not canned_audio:
+                    _record_error(session, f"canned audio not found or empty: {settings.canned_audio_path}")
+                    continue
+                await _send_audio_stream(websocket, session, canned_audio, settings=settings)
+                response_count += 1
+                if settings.send_cart_after_first_echo and not cart_sent_after_first_echo:
+                    await _send_json(websocket, session, _cart_updated_message(), kind="cart_updated")
+                    cart_sent_after_first_echo = True
+                if settings.close_after_echoes and response_count >= settings.close_after_echoes:
+                    await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
+                    return
+                continue
+
+            if settings.response_mode != RESPONSE_MODE_ECHO:
+                _record_error(session, f"unsupported response mode: {settings.response_mode}")
+                continue
+
             while len(audio_buffer) >= threshold:
                 chunk = bytes(audio_buffer[:threshold])
                 del audio_buffer[:threshold]
                 await _send_audio(websocket, session, chunk, settings=settings)
-                echo_count += 1
+                response_count += 1
                 if settings.send_cart_after_first_echo and not cart_sent_after_first_echo:
                     await _send_json(websocket, session, _cart_updated_message(), kind="cart_updated")
                     cart_sent_after_first_echo = True
-                if settings.close_after_echoes and echo_count >= settings.close_after_echoes:
+                if settings.close_after_echoes and response_count >= settings.close_after_echoes:
                     await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
                     return
+    except WebSocketDisconnect:
+        pass
     finally:
         session.disconnected_at = time.time()
         logger.info(
@@ -388,6 +433,18 @@ async def _send_audio(websocket: WebSocket, session: SessionState, audio_bytes: 
     )
 
 
+async def _send_audio_stream(
+    websocket: WebSocket, session: SessionState, audio_bytes: bytes, *, settings: Settings
+) -> None:
+    frame_size = max(settings.channels * settings.bytes_per_sample, 1)
+    chunk_size = int(settings.frame_bytes_per_second * max(settings.canned_response_chunk_ms, 1) / 1000)
+    chunk_size = max(frame_size, chunk_size - (chunk_size % frame_size))
+    for offset in range(0, len(audio_bytes), chunk_size):
+        chunk = audio_bytes[offset : offset + chunk_size]
+        await _send_audio(websocket, session, chunk, settings=settings)
+        await asyncio.sleep(len(chunk) / settings.frame_bytes_per_second)
+
+
 async def _send_json(
     websocket: WebSocket,
     session: SessionState,
@@ -437,6 +494,14 @@ def _sine_pcm(*, duration_ms: int, settings: Settings) -> bytes:
         sample = value.to_bytes(2, byteorder="little", signed=True)
         frames.extend(sample * settings.channels)
     return bytes(frames)
+
+
+@lru_cache(maxsize=8)
+def _load_canned_audio(path: str) -> bytes:
+    audio_path = Path(path)
+    if not audio_path.exists():
+        return b""
+    return audio_path.read_bytes()
 
 
 def _safe_message_detail(message: dict[str, Any]) -> dict[str, Any]:
