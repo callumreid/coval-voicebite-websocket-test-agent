@@ -144,11 +144,12 @@ All knobs are optional environment variables:
 
 - `VOICEBITE_SAMPLE_RATE_HZ`: default `16000`.
 - `VOICEBITE_CHANNELS`: default `1`.
-- `VOICEBITE_ECHO_THRESHOLD_BYTES`: default `3200`.
+- `VOICEBITE_ECHO_THRESHOLD_BYTES`: minimum inbound turn audio before responding; default `3200`.
 - `VOICEBITE_RESPONSE_MODE`: `echo` or `canned_speech`; local default `echo`.
 - `VOICEBITE_CANNED_AUDIO_PATH`: raw PCM16LE mono 16 kHz response file.
 - `VOICEBITE_CANNED_RESPONSE_LIMIT`: default `2`.
 - `VOICEBITE_CANNED_RESPONSE_CHUNK_MS`: default `100`.
+- `VOICEBITE_CANNED_TURN_SILENCE_MS`: silence gap after inbound audio before a canned response; default `800`.
 - `VOICEBITE_SEND_CART_ON_CONNECT`: default `true`.
 - `VOICEBITE_SEND_CART_AFTER_FIRST_ECHO`: default `false`.
 - `VOICEBITE_SEND_SESSION_READY`: default `false`.

@@ -71,6 +71,7 @@ class Settings:
     )
     canned_response_limit: int = field(default_factory=lambda: _env_int("VOICEBITE_CANNED_RESPONSE_LIMIT", 2))
     canned_response_chunk_ms: int = field(default_factory=lambda: _env_int("VOICEBITE_CANNED_RESPONSE_CHUNK_MS", 100))
+    canned_turn_silence_ms: int = field(default_factory=lambda: _env_int("VOICEBITE_CANNED_TURN_SILENCE_MS", 800))
     send_cart_on_connect: bool = field(default_factory=lambda: _env_bool("VOICEBITE_SEND_CART_ON_CONNECT", True))
     send_cart_after_first_echo: bool = field(
         default_factory=lambda: _env_bool("VOICEBITE_SEND_CART_AFTER_FIRST_ECHO", False)
@@ -177,6 +178,7 @@ def _redacted_settings(settings: Settings) -> dict[str, Any]:
         "canned_audio_path": settings.canned_audio_path,
         "canned_response_limit": settings.canned_response_limit,
         "canned_response_chunk_ms": settings.canned_response_chunk_ms,
+        "canned_turn_silence_ms": settings.canned_turn_silence_ms,
         "send_cart_on_connect": settings.send_cart_on_connect,
         "send_cart_after_first_echo": settings.send_cart_after_first_echo,
         "send_session_ready": settings.send_session_ready,
@@ -294,7 +296,31 @@ async def _websocket_handler(websocket: WebSocket, agent_id: str) -> None:
             response_count += 1
 
         while True:
-            incoming = await websocket.receive()
+            try:
+                if settings.response_mode == RESPONSE_MODE_CANNED_SPEECH and audio_buffer:
+                    incoming = await asyncio.wait_for(
+                        websocket.receive(),
+                        timeout=max(settings.canned_turn_silence_ms, 1) / 1000,
+                    )
+                else:
+                    incoming = await websocket.receive()
+            except asyncio.TimeoutError:
+                if await _maybe_send_canned_response(
+                    websocket,
+                    session,
+                    settings=settings,
+                    audio_buffer=audio_buffer,
+                    response_count=response_count,
+                ):
+                    response_count += 1
+                    if settings.send_cart_after_first_echo and not cart_sent_after_first_echo:
+                        await _send_json(websocket, session, _cart_updated_message(), kind="cart_updated")
+                        cart_sent_after_first_echo = True
+                    if settings.close_after_echoes and response_count >= settings.close_after_echoes:
+                        await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
+                        return
+                continue
+
             if incoming["type"] == "websocket.disconnect":
                 break
 
@@ -317,23 +343,6 @@ async def _websocket_handler(websocket: WebSocket, agent_id: str) -> None:
             audio_buffer.extend(audio_bytes)
             threshold = max(settings.echo_threshold_bytes, 1)
             if settings.response_mode == RESPONSE_MODE_CANNED_SPEECH:
-                if len(audio_buffer) < threshold:
-                    continue
-                audio_buffer.clear()
-                if settings.canned_response_limit and response_count >= settings.canned_response_limit:
-                    continue
-                canned_audio = _load_canned_audio(settings.canned_audio_path)
-                if not canned_audio:
-                    _record_error(session, f"canned audio not found or empty: {settings.canned_audio_path}")
-                    continue
-                await _send_audio_stream(websocket, session, canned_audio, settings=settings)
-                response_count += 1
-                if settings.send_cart_after_first_echo and not cart_sent_after_first_echo:
-                    await _send_json(websocket, session, _cart_updated_message(), kind="cart_updated")
-                    cart_sent_after_first_echo = True
-                if settings.close_after_echoes and response_count >= settings.close_after_echoes:
-                    await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
-                    return
                 continue
 
             if settings.response_mode != RESPONSE_MODE_ECHO:
@@ -362,6 +371,28 @@ async def _websocket_handler(websocket: WebSocket, agent_id: str) -> None:
             session.sent_audio_messages,
             len(session.errors),
         )
+
+
+async def _maybe_send_canned_response(
+    websocket: WebSocket,
+    session: SessionState,
+    *,
+    settings: Settings,
+    audio_buffer: bytearray,
+    response_count: int,
+) -> bool:
+    threshold = max(settings.echo_threshold_bytes, 1)
+    if len(audio_buffer) < threshold:
+        return False
+    audio_buffer.clear()
+    if settings.canned_response_limit and response_count >= settings.canned_response_limit:
+        return False
+    canned_audio = _load_canned_audio(settings.canned_audio_path)
+    if not canned_audio:
+        _record_error(session, f"canned audio not found or empty: {settings.canned_audio_path}")
+        return False
+    await _send_audio_stream(websocket, session, canned_audio, settings=settings)
+    return True
 
 
 def _is_authorized(websocket: WebSocket, settings: Settings) -> bool:

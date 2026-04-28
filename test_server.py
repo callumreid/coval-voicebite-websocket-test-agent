@@ -63,6 +63,7 @@ def test_websocket_can_send_canned_speech(monkeypatch):
     monkeypatch.setenv("VOICEBITE_RESPONSE_MODE", "canned_speech")
     monkeypatch.setenv("VOICEBITE_CANNED_AUDIO_PATH", str(canned_path))
     monkeypatch.setenv("VOICEBITE_CANNED_RESPONSE_CHUNK_MS", "1000")
+    monkeypatch.setenv("VOICEBITE_CANNED_TURN_SILENCE_MS", "1")
 
     with client.websocket_connect("/ws") as websocket:
         websocket.receive_json()
