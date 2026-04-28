@@ -34,6 +34,8 @@ def test_health_and_config():
     assert metadata["message_type_path"] == "action"
     assert metadata["audio_data_path"] == "audio_bytes"
     assert metadata["receive_audio_channels"] == 1
+    assert "canned_silence_rms_threshold" in config["settings"]
+    assert "canned_force_response_bytes" in config["settings"]
 
 
 def test_websocket_emits_cart_and_echoes_voicebite_audio():
@@ -58,7 +60,8 @@ def test_websocket_emits_cart_and_echoes_voicebite_audio():
 
 
 def test_websocket_can_send_canned_speech(monkeypatch):
-    pcm = b"\x01\x00" * 1600
+    speech = b"\x00\x20" * 1600
+    silence = b"\x00\x00" * 1600
     canned_path = Path(__file__).with_name("assets") / "voicebite-agent-reply.pcm"
     monkeypatch.setenv("VOICEBITE_RESPONSE_MODE", "canned_speech")
     monkeypatch.setenv("VOICEBITE_CANNED_AUDIO_PATH", str(canned_path))
@@ -67,12 +70,35 @@ def test_websocket_can_send_canned_speech(monkeypatch):
 
     with client.websocket_connect("/ws") as websocket:
         websocket.receive_json()
-        websocket.send_json(_audio_message(pcm))
+        websocket.send_json(_audio_message(speech))
+        websocket.send_json(_audio_message(silence))
         response = websocket.receive_json()
 
     assert response["action"] == "audio_message"
     assert response["sender"] == "AI"
-    assert base64.b64decode(response["audio_bytes"]) != pcm
+    assert base64.b64decode(response["audio_bytes"]) != speech
+
+    session = client.get("/sessions").json()["sessions"][0]
+    assert session["received_audio_messages"] == 2
+    assert session["sent_audio_messages"] >= 1
+
+
+def test_websocket_can_force_canned_response_without_silence(monkeypatch):
+    speech = b"\x00\x20" * 1600
+    canned_path = Path(__file__).with_name("assets") / "voicebite-agent-reply.pcm"
+    monkeypatch.setenv("VOICEBITE_RESPONSE_MODE", "canned_speech")
+    monkeypatch.setenv("VOICEBITE_CANNED_AUDIO_PATH", str(canned_path))
+    monkeypatch.setenv("VOICEBITE_CANNED_RESPONSE_CHUNK_MS", "1000")
+    monkeypatch.setenv("VOICEBITE_CANNED_TURN_SILENCE_MS", "10000")
+    monkeypatch.setenv("VOICEBITE_CANNED_FORCE_RESPONSE_BYTES", str(len(speech)))
+
+    with client.websocket_connect("/ws") as websocket:
+        websocket.receive_json()
+        websocket.send_json(_audio_message(speech))
+        response = websocket.receive_json()
+
+    assert response["action"] == "audio_message"
+    assert response["sender"] == "AI"
 
     session = client.get("/sessions").json()["sessions"][0]
     assert session["received_audio_messages"] == 1

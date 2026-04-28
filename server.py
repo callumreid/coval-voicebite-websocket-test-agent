@@ -72,6 +72,12 @@ class Settings:
     canned_response_limit: int = field(default_factory=lambda: _env_int("VOICEBITE_CANNED_RESPONSE_LIMIT", 2))
     canned_response_chunk_ms: int = field(default_factory=lambda: _env_int("VOICEBITE_CANNED_RESPONSE_CHUNK_MS", 100))
     canned_turn_silence_ms: int = field(default_factory=lambda: _env_int("VOICEBITE_CANNED_TURN_SILENCE_MS", 800))
+    canned_silence_rms_threshold: int = field(
+        default_factory=lambda: _env_int("VOICEBITE_CANNED_SILENCE_RMS_THRESHOLD", 250)
+    )
+    canned_force_response_bytes: int = field(
+        default_factory=lambda: _env_int("VOICEBITE_CANNED_FORCE_RESPONSE_BYTES", 0)
+    )
     send_cart_on_connect: bool = field(default_factory=lambda: _env_bool("VOICEBITE_SEND_CART_ON_CONNECT", True))
     send_cart_after_first_echo: bool = field(
         default_factory=lambda: _env_bool("VOICEBITE_SEND_CART_AFTER_FIRST_ECHO", False)
@@ -87,6 +93,10 @@ class Settings:
     @property
     def frame_bytes_per_second(self) -> int:
         return self.sample_rate_hz * self.channels * self.bytes_per_sample
+
+    @property
+    def canned_turn_silence_bytes(self) -> int:
+        return int(self.frame_bytes_per_second * max(self.canned_turn_silence_ms, 0) / 1000)
 
 
 @dataclass
@@ -179,6 +189,8 @@ def _redacted_settings(settings: Settings) -> dict[str, Any]:
         "canned_response_limit": settings.canned_response_limit,
         "canned_response_chunk_ms": settings.canned_response_chunk_ms,
         "canned_turn_silence_ms": settings.canned_turn_silence_ms,
+        "canned_silence_rms_threshold": settings.canned_silence_rms_threshold,
+        "canned_force_response_bytes": settings.canned_force_response_bytes,
         "send_cart_on_connect": settings.send_cart_on_connect,
         "send_cart_after_first_echo": settings.send_cart_after_first_echo,
         "send_session_ready": settings.send_session_ready,
@@ -279,6 +291,8 @@ async def _websocket_handler(websocket: WebSocket, agent_id: str) -> None:
     audio_buffer = bytearray()
     response_count = 0
     cart_sent_after_first_echo = False
+    heard_speech = False
+    silent_audio_bytes = 0
 
     try:
         if settings.send_session_ready:
@@ -313,6 +327,8 @@ async def _websocket_handler(websocket: WebSocket, agent_id: str) -> None:
                     response_count=response_count,
                 ):
                     response_count += 1
+                    heard_speech = False
+                    silent_audio_bytes = 0
                     if settings.send_cart_after_first_echo and not cart_sent_after_first_echo:
                         await _send_json(websocket, session, _cart_updated_message(), kind="cart_updated")
                         cart_sent_after_first_echo = True
@@ -343,6 +359,35 @@ async def _websocket_handler(websocket: WebSocket, agent_id: str) -> None:
             audio_buffer.extend(audio_bytes)
             threshold = max(settings.echo_threshold_bytes, 1)
             if settings.response_mode == RESPONSE_MODE_CANNED_SPEECH:
+                rms = _pcm16_rms(audio_bytes)
+                if rms >= settings.canned_silence_rms_threshold:
+                    heard_speech = True
+                    silent_audio_bytes = 0
+                elif heard_speech:
+                    silent_audio_bytes += len(audio_bytes)
+
+                silence_ready = heard_speech and silent_audio_bytes >= settings.canned_turn_silence_bytes
+                force_ready = (
+                    settings.canned_force_response_bytes > 0
+                    and len(audio_buffer) >= settings.canned_force_response_bytes
+                )
+                if len(audio_buffer) >= threshold and (silence_ready or force_ready):
+                    if await _maybe_send_canned_response(
+                        websocket,
+                        session,
+                        settings=settings,
+                        audio_buffer=audio_buffer,
+                        response_count=response_count,
+                    ):
+                        response_count += 1
+                        heard_speech = False
+                        silent_audio_bytes = 0
+                        if settings.send_cart_after_first_echo and not cart_sent_after_first_echo:
+                            await _send_json(websocket, session, _cart_updated_message(), kind="cart_updated")
+                            cart_sent_after_first_echo = True
+                        if settings.close_after_echoes and response_count >= settings.close_after_echoes:
+                            await websocket.close(code=status.WS_1000_NORMAL_CLOSURE)
+                            return
                 continue
 
             if settings.response_mode != RESPONSE_MODE_ECHO:
@@ -384,9 +429,9 @@ async def _maybe_send_canned_response(
     threshold = max(settings.echo_threshold_bytes, 1)
     if len(audio_buffer) < threshold:
         return False
-    audio_buffer.clear()
     if settings.canned_response_limit and response_count >= settings.canned_response_limit:
         return False
+    audio_buffer.clear()
     canned_audio = _load_canned_audio(settings.canned_audio_path)
     if not canned_audio:
         _record_error(session, f"canned audio not found or empty: {settings.canned_audio_path}")
@@ -525,6 +570,18 @@ def _sine_pcm(*, duration_ms: int, settings: Settings) -> bytes:
         sample = value.to_bytes(2, byteorder="little", signed=True)
         frames.extend(sample * settings.channels)
     return bytes(frames)
+
+
+def _pcm16_rms(audio_bytes: bytes) -> int:
+    sample_count = len(audio_bytes) // 2
+    if sample_count == 0:
+        return 0
+
+    total = 0
+    for offset in range(0, sample_count * 2, 2):
+        sample = int.from_bytes(audio_bytes[offset : offset + 2], byteorder="little", signed=True)
+        total += sample * sample
+    return int(math.sqrt(total / sample_count))
 
 
 @lru_cache(maxsize=8)

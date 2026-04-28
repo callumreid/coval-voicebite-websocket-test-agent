@@ -150,6 +150,8 @@ All knobs are optional environment variables:
 - `VOICEBITE_CANNED_RESPONSE_LIMIT`: default `2`.
 - `VOICEBITE_CANNED_RESPONSE_CHUNK_MS`: default `100`.
 - `VOICEBITE_CANNED_TURN_SILENCE_MS`: silence gap after inbound audio before a canned response; default `800`.
+- `VOICEBITE_CANNED_SILENCE_RMS_THRESHOLD`: PCM16 RMS value below which inbound audio counts as silence; default `250`.
+- `VOICEBITE_CANNED_FORCE_RESPONSE_BYTES`: optional inbound byte count that forces a canned response even if no silence is detected; default `0`.
 - `VOICEBITE_SEND_CART_ON_CONNECT`: default `true`.
 - `VOICEBITE_SEND_CART_AFTER_FIRST_ECHO`: default `false`.
 - `VOICEBITE_SEND_SESSION_READY`: default `false`.
