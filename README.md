@@ -5,16 +5,45 @@ with Coval. It lets Coval's `MODEL_TYPE_WEBSOCKET` simulator validate the
 generic JSON-audio path without depending on Checkmate staging uptime.
 
 This is intentionally a protocol test agent, not a faithful copy of Checkmate's
-business logic. The current customer spec only defines message schemas, so the
-server mirrors those schemas and keeps behavior deterministic until Checkmate
-confirms the missing details.
+business logic. It mirrors the AsyncAPI message shapes that Checkmate confirmed
+on 2026-05-07 and keeps non-audio behavior deterministic.
+
+## Customer-confirmed protocol summary (2026-05-07)
+
+- Canonical endpoint: `wss://voicebite-websocket-app-staging.azurewebsites.net/ws`
+  (the `voicebite-websocket-app-coval.azuresites.net/ws` host is documentation
+  metadata only).
+- Authentication: Bearer token, header
+  `Authorization: Bearer <ACCESS_TOKEN>` or query string
+  `?token=<ACCESS_TOKEN>`.
+- No init / no ready / no ping / no end-of-call message. Connection is active
+  immediately after upgrade. Standard close frames terminate.
+- Audio is JSON only: base64 PCM in `audio_bytes`. Linear PCM, 16000 Hz, 16-bit
+  signed little-endian, mono. Preferred chunk duration 20-100 ms.
+- `audio_message` is bidirectional. Coval (client) sends `sender: "USER"`.
+  Agent (server) sends `sender: "AI"`.
+- `system_notify` / `ocb:cart-updated` events are server-originated. Coval
+  receives them and may assert against them; Coval does not emit them.
 
 ## What It Simulates
 
 - `wss://.../ws` direct WebSocket connection.
+- Optional Bearer auth via header or `?token=` query param when
+  `VOICEBITE_REQUIRE_AUTH=true`.
 - No initialization payload by default.
 - No `session_ready` handshake by default.
-- Inbound and outbound JSON audio frames:
+- Inbound JSON audio frames from Coval:
+
+```json
+{
+  "action": "audio_message",
+  "payload": {},
+  "audio_bytes": "<base64 pcm_s16le audio>",
+  "sender": "USER"
+}
+```
+
+- Outbound JSON audio frames from the harness:
 
 ```json
 {
@@ -129,14 +158,18 @@ is:
   "receive_sample_rate_hertz": 16000,
   "handshake_ready_message_type": "",
   "handshake_requires_session_id": false,
-  "send_audio_template": "{\"action\":\"audio_message\",\"payload\":{},\"audio_bytes\":\"{{audio_data}}\",\"sender\":\"AI\"}",
+  "send_audio_template": "{\"action\":\"audio_message\",\"payload\":{},\"audio_bytes\":\"{{audio_data}}\",\"sender\":\"USER\"}",
   "message_type_path": "action",
   "audio_message_type_value": "audio_message",
   "audio_data_path": "audio_bytes",
   "audio_encoding": "pcm",
-  "receive_audio_channels": 1
+  "receive_audio_channels": 1,
+  "non_audio_event_message_types": ["system_notify"]
 }
 ```
+
+When dialing the real Checkmate staging endpoint, also set
+`authorization_header` to `"Bearer <ACCESS_TOKEN>"`.
 
 ## Runtime Knobs
 
@@ -160,16 +193,11 @@ All knobs are optional environment variables:
 - `VOICEBITE_AUTH_TOKEN`: bearer/query token when auth is enabled.
 - `VOICEBITE_CLOSE_AFTER_ECHOS`: default `0`, meaning keep connection open.
 
-## Known Gaps Pending Checkmate Answers
+## Remaining Caveats
 
-The harness assumes base64-encoded raw PCM16LE mono audio at 16 kHz because that
-is the configuration Coval currently needs for the generic simulator work. It
-does not yet prove:
-
-- exact Checkmate codec/sample rate/channel count;
-- whether `audio_bytes` is definitely base64 PCM or another binary string form;
-- which side should send `sender=AI`;
-- auth/query/header/session lifecycle;
-- whether cart events are agent-to-client only, client-to-agent only, or
-  bidirectional;
-- realistic Checkmate turn-taking/business behavior.
+The harness now matches every protocol detail Checkmate confirmed, but it is
+still a deterministic protocol harness rather than a faithful copy of their
+business behavior. It does not simulate realistic Checkmate turn-taking, full
+menu/cart logic, or upstream orchestration. For end-to-end confidence we still
+need a single live run against `wss://voicebite-websocket-app-staging.azurewebsites.net/ws`
+with a Coval-scoped Bearer token from Checkmate.

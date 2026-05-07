@@ -36,7 +36,9 @@ logger = logging.getLogger(__name__)
 SERVICE_NAME = "voicebite-websocket-test-agent"
 VERSION = "0.1.0"
 DEFAULT_PUBLIC_BASE_URL = "https://coval-voicebite-websocket-test-agent.fly.dev"
-VOICEBITE_AUDIO_TEMPLATE = '{"action":"audio_message","payload":{},"audio_bytes":"{{audio_data}}","sender":"AI"}'
+VOICEBITE_OUTBOUND_AUDIO_TEMPLATE = (
+    '{"action":"audio_message","payload":{},"audio_bytes":"{{audio_data}}","sender":"USER"}'
+)
 RESPONSE_MODE_ECHO = "echo"
 RESPONSE_MODE_CANNED_SPEECH = "canned_speech"
 DEFAULT_CANNED_AUDIO_PATH = Path(__file__).with_name("assets") / "voicebite-agent-reply.pcm"
@@ -214,12 +216,13 @@ def _recommended_coval_metadata(settings: Settings) -> dict[str, Any]:
         "receive_sample_rate_hertz": settings.sample_rate_hz,
         "handshake_ready_message_type": "",
         "handshake_requires_session_id": False,
-        "send_audio_template": VOICEBITE_AUDIO_TEMPLATE,
+        "send_audio_template": VOICEBITE_OUTBOUND_AUDIO_TEMPLATE,
         "message_type_path": "action",
         "audio_message_type_value": "audio_message",
         "audio_data_path": "audio_bytes",
         "audio_encoding": "pcm",
         "receive_audio_channels": settings.channels,
+        "non_audio_event_message_types": ["system_notify"],
     }
 
 
