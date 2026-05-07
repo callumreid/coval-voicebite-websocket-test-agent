@@ -31,6 +31,7 @@ def test_health_and_config():
     config = client.get("/config").json()
     metadata = config["recommended_coval_metadata"]
     assert metadata["model_type"] == "MODEL_TYPE_WEBSOCKET"
+    assert metadata["websocket_compat_profile"] == "voicebite_json_audio"
     assert metadata["message_type_path"] == "action"
     assert metadata["audio_data_path"] == "audio_bytes"
     assert metadata["receive_audio_channels"] == 1

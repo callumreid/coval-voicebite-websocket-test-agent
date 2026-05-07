@@ -211,6 +211,7 @@ def _recommended_coval_metadata(settings: Settings) -> dict[str, Any]:
         "model_type": "MODEL_TYPE_WEBSOCKET",
         "endpoint": f"{websocket_url}/ws",
         "connection_mode": "direct",
+        "websocket_compat_profile": "voicebite_json_audio",
         "initialization_json": "",
         "send_sample_rate_hertz": settings.sample_rate_hz,
         "receive_sample_rate_hertz": settings.sample_rate_hz,

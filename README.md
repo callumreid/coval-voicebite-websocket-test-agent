@@ -153,6 +153,7 @@ is:
   "model_type": "MODEL_TYPE_WEBSOCKET",
   "endpoint": "wss://coval-voicebite-websocket-test-agent.fly.dev/ws",
   "connection_mode": "direct",
+  "websocket_compat_profile": "voicebite_json_audio",
   "initialization_json": "",
   "send_sample_rate_hertz": 16000,
   "receive_sample_rate_hertz": 16000,
