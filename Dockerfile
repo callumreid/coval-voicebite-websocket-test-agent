@@ -6,6 +6,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY server.py .
+COPY coval_tracing.py .
 COPY assets ./assets
 
 EXPOSE 8000
